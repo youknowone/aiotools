@@ -47,8 +47,7 @@ if has_contextvars:
 
 
 class TaskGroup:
-
-    def __init__(self, *, name=None):
+    def __init__(self, *, name=None, return_when=asyncio.ALL_COMPLETED):
         if name is None:
             self._name = f"tg-{_name_counter()}"
         else:
@@ -65,6 +64,7 @@ class TaskGroup:
         self._errors = []
         self._base_error = None
         self._on_completed_fut = None
+        self._return_when = return_when
 
     def get_name(self):
         return self._name
@@ -89,6 +89,7 @@ class TaskGroup:
             raise RuntimeError(
                 f"TaskGroup {self!r} has been already entered")
         self._entered = True
+        self._last_finished_task = None
 
         self._parent_task = current_task()
 
@@ -160,7 +161,14 @@ class TaskGroup:
 
             self._on_completed_fut = None
 
-        assert self._unfinished_tasks == 0
+            if self._last_finished_task is None:
+                continue
+            if self._return_when == asyncio.FIRST_COMPLETED or (
+                self._return_when == asyncio.FIRST_EXCEPTION and self._errors
+            ):
+                break
+
+        assert self._return_when != asyncio.ALL_COMPLETED or self._unfinished_tasks == 0
         self._on_completed_fut = None  # no longer needed
         if has_contextvars:
             current_taskgroup.reset(self._current_taskgroup_token)
@@ -184,9 +192,10 @@ class TaskGroup:
             errors = self._errors
             self._errors = None
 
-            me = TaskGroupError('unhandled errors in a TaskGroup',
-                                errors)
+            me = TaskGroupError("unhandled errors in a TaskGroup", errors)
             raise me from None
+
+        self._entered = False
 
     def create_task(self, coro, *, name=None):
         if not self._entered:
@@ -210,11 +219,21 @@ class TaskGroup:
             if not t.done():
                 t.cancel()
 
+    def _completed(self, task):
+        if self._return_when == asyncio.ALL_COMPLETED:
+            return self._unfinished_tasks == 0
+        if self._return_when == asyncio.FIRST_COMPLETED:
+            return task.done()
+        if self._return_when == asyncio.FIRST_EXCEPTION:
+            return task.exception()
+        assert False
+
     def _on_task_done(self, task):
+        self._last_finished_task = task
         self._unfinished_tasks -= 1
         assert self._unfinished_tasks >= 0
 
-        if self._exiting and not self._unfinished_tasks:
+        if self._exiting and self._completed(task):
             if not self._on_completed_fut.done():
                 self._on_completed_fut.set_result(True)
 

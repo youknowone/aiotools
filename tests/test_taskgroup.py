@@ -306,3 +306,22 @@ async def test_taskgroup_memoryleak_with_persistent_tg():
                     assert len(tg._tasks) == 11
             await asyncio.sleep(10.1)
             assert len(tg._tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_taskgroup_wait_first_completed():
+    tg = TaskGroup(return_when=asyncio.FIRST_COMPLETED)
+    async with tg as tg:
+        t1 = tg.create_task(asyncio.sleep(1))
+        t2 = tg.create_task(asyncio.sleep(2))
+
+    print(t1)
+    print(t2)
+
+    assert t1.done()
+    assert not t2.done()
+
+    async with tg as tg:
+        pass
+
+    assert t2.done()
